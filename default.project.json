@@ -1,0 +1,45 @@
+{
+  "name": "FruitCollector",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/ReplicatedStorage/Shared"
+      },
+      "Remotes": {
+        "$path": "src/ReplicatedStorage/Remotes"
+      }
+    },
+    "ServerScriptService": {
+      "$path": "src/ServerScriptService",
+      "FruitSpawner.server.lua": {
+        "$path": "src/server/FruitSpawner.server.lua"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "src/StarterPlayer/StarterPlayerScripts"
+      }
+    },
+    "StarterGui": {
+      "FruitGui": {
+        "$path": "src/StarterGui/FruitGui"
+      }
+    },
+    "Workspace": {
+      "$properties": {
+        "FilteringEnabled": true
+      },
+      "Baseplate": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "Color": [0.4, 0.7, 0.4],
+          "Locked": true,
+          "Size": [512, 1, 512],
+          "Position": [0, -5, 0]
+        }
+      }
+    }
+  }
+}
