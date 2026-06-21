@@ -18,7 +18,10 @@
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "$path": "src/StarterPlayer/StarterPlayerScripts"
+        "$path": "src/StarterPlayer/StarterPlayerScripts",
+        "FruitDebugClient.client.lua": {
+          "$path": "src/client/FruitDebugClient.client.lua"
+        }
       }
     },
     "StarterGui": {

@@ -2,15 +2,23 @@
 -- Uses Workspace fruit assets whose names contain "Fruit" as templates.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 
 local FRUIT_TEMPLATE_FOLDER_NAME = "FruitTemplates"
+local FRUIT_DEBUG_EVENT_NAME = "FruitDebugEvent"
+local FRUIT_SOUND_EVENT_NAME = "FruitSoundEvent"
 local FRUIT_NAME_TOKEN = "Fruit"
+local FRUIT_SPAWN_AREA_FOLDER_NAME = "FruitSpawnArea"
+local AREAS_FOLDER_NAME = "Areas"
+local GRASS_SPAWN_AREA_NAME = "Grass"
 local TARGET_LONGEST_AXIS = 2.2
 local SPAWN_INTERVAL = 2
-local SPAWN_HEIGHT_ABOVE_SPAWN = 15
-local SPAWN_AREA_SCALE = 1.2
+local SPAWN_HEIGHT_ABOVE_GRASS = 80
+local BGM_SOUND_ID = "rbxassetid://1839825760"
+local BGM_VOLUME = 0.25
 
 local fruitTemplateFolder = ServerStorage:FindFirstChild(FRUIT_TEMPLATE_FOLDER_NAME)
 if not fruitTemplateFolder then
@@ -19,10 +27,43 @@ if not fruitTemplateFolder then
     fruitTemplateFolder.Parent = ServerStorage
 end
 
-local warnedMissingSpawnLocation = false
+local fruitDebugEvent = ReplicatedStorage:FindFirstChild(FRUIT_DEBUG_EVENT_NAME)
+if not fruitDebugEvent then
+    fruitDebugEvent = Instance.new("RemoteEvent")
+    fruitDebugEvent.Name = FRUIT_DEBUG_EVENT_NAME
+    fruitDebugEvent.Parent = ReplicatedStorage
+end
+
+local fruitSoundEvent = ReplicatedStorage:FindFirstChild(FRUIT_SOUND_EVENT_NAME)
+if not fruitSoundEvent then
+    fruitSoundEvent = Instance.new("RemoteEvent")
+    fruitSoundEvent.Name = FRUIT_SOUND_EVENT_NAME
+    fruitSoundEvent.Parent = ReplicatedStorage
+end
+
+local warnedMissingGrassArea = false
+local warnedMissingGrassParts = false
+local loggedGrassAreaFound = false
 
 local function debugLog(message)
     print("[FruitSpawner] " .. message)
+end
+
+local function setupBackgroundMusic()
+    local bgm = SoundService:FindFirstChild("FruitCollectorBGM")
+    if not bgm then
+        bgm = Instance.new("Sound")
+        bgm.Name = "FruitCollectorBGM"
+        bgm.Parent = SoundService
+    end
+
+    bgm.SoundId = BGM_SOUND_ID
+    bgm.Looped = true
+    bgm.Volume = BGM_VOLUME
+
+    if not bgm.IsPlaying then
+        bgm:Play()
+    end
 end
 
 local function isFruitName(name)
@@ -120,34 +161,72 @@ local function setSpawnedFruitPhysics(instance)
     end
 end
 
-local function findSpawnLocation()
-    for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if descendant:IsA("SpawnLocation") then
-            return descendant
+local function findGrassSpawnArea()
+    local fruitSpawnArea = Workspace:FindFirstChild(FRUIT_SPAWN_AREA_FOLDER_NAME)
+    local areas = fruitSpawnArea and fruitSpawnArea:FindFirstChild(AREAS_FOLDER_NAME)
+    local grass = areas and areas:FindFirstChild(GRASS_SPAWN_AREA_NAME)
+
+    if not grass then
+        if not warnedMissingGrassArea then
+            warnedMissingGrassArea = true
+            warn("[FruitSpawner] Grass spawn area not found at Workspace/FruitSpawnArea/Areas/Grass. Fruit spawning is paused.")
         end
-    end
-
-    if not warnedMissingSpawnLocation then
-        warnedMissingSpawnLocation = true
-        warn("[FruitSpawner] SpawnLocation not found. Fruit spawning is paused.")
-    end
-
-    return nil
-end
-
-local function getRandomSpawnPosition()
-    local spawnLocation = findSpawnLocation()
-    if not spawnLocation then
         return nil
     end
 
-    local halfX = spawnLocation.Size.X * 0.5 * SPAWN_AREA_SCALE
-    local halfZ = spawnLocation.Size.Z * 0.5 * SPAWN_AREA_SCALE
-    local x = spawnLocation.Position.X + ((math.random() * 2 - 1) * halfX)
-    local z = spawnLocation.Position.Z + ((math.random() * 2 - 1) * halfZ)
-    local y = spawnLocation.Position.Y + (spawnLocation.Size.Y * 0.5) + SPAWN_HEIGHT_ABOVE_SPAWN
+    if not loggedGrassAreaFound then
+        loggedGrassAreaFound = true
+        debugLog("Grass spawn area found: " .. grass:GetFullName())
+    end
 
-    return Vector3.new(x, y, z)
+    return grass
+end
+
+local function getGrassSpawnParts()
+    local grass = findGrassSpawnArea()
+    if not grass then
+        return {}
+    end
+
+    local parts = {}
+    if grass:IsA("BasePart") then
+        table.insert(parts, grass)
+    elseif grass:IsA("Folder") or grass:IsA("Model") then
+        for _, descendant in ipairs(grass:GetDescendants()) do
+            if descendant:IsA("BasePart") then
+                table.insert(parts, descendant)
+            end
+        end
+    end
+
+    if #parts <= 0 then
+        if not warnedMissingGrassParts then
+            warnedMissingGrassParts = true
+            warn("[FruitSpawner] Grass spawn area has no BasePart. Fruit spawning is paused.")
+        end
+    else
+        debugLog("Grass spawn part count: " .. tostring(#parts))
+    end
+
+    return parts
+end
+
+local function getRandomSpawnPosition()
+    local spawnParts = getGrassSpawnParts()
+    if #spawnParts <= 0 then
+        return nil, nil
+    end
+
+    local selectedPart = spawnParts[math.random(1, #spawnParts)]
+    local halfX = selectedPart.Size.X * 0.5
+    local halfZ = selectedPart.Size.Z * 0.5
+    local x = selectedPart.Position.X + ((math.random() * 2 - 1) * halfX)
+    local z = selectedPart.Position.Z + ((math.random() * 2 - 1) * halfZ)
+    local y = selectedPart.Position.Y + SPAWN_HEIGHT_ABOVE_GRASS
+
+    debugLog("Selected spawn part: " .. selectedPart:GetFullName())
+
+    return Vector3.new(x, y, z), selectedPart
 end
 
 local function moveToPosition(instance, position)
@@ -206,6 +285,30 @@ local function ensureScore(player)
     return score
 end
 
+local function ensureFruitCounts(player)
+    local fruitCounts = player:FindFirstChild("FruitCounts")
+    if not fruitCounts then
+        fruitCounts = Instance.new("Folder")
+        fruitCounts.Name = "FruitCounts"
+        fruitCounts.Parent = player
+    end
+
+    return fruitCounts
+end
+
+local function ensureFruitCountValue(player, fruitName)
+    local fruitCounts = ensureFruitCounts(player)
+    local fruitCount = fruitCounts:FindFirstChild(fruitName)
+    if not fruitCount then
+        fruitCount = Instance.new("IntValue")
+        fruitCount.Name = fruitName
+        fruitCount.Value = 0
+        fruitCount.Parent = fruitCounts
+    end
+
+    return fruitCount
+end
+
 local function collectFruit(player, fruit)
     if fruit:GetAttribute("Collected") then
         return
@@ -213,12 +316,25 @@ local function collectFruit(player, fruit)
 
     fruit:SetAttribute("Collected", true)
 
+    local fruitName = fruit.Name
     local score = ensureScore(player)
     local oldScore = score.Value
     score.Value += 1
 
-    debugLog(player.Name .. " collected " .. fruit.Name)
+    local fruitCount = ensureFruitCountValue(player, fruitName)
+    fruitCount.Value += 1
+
+    print(string.format(
+        "[FruitDebug] %s collected %s / FruitCount: %d / TotalScore: %d",
+        player.Name,
+        fruitName,
+        fruitCount.Value,
+        score.Value
+    ))
+    debugLog(player.Name .. " collected " .. fruitName)
     debugLog(player.Name .. " score changed: " .. tostring(oldScore) .. " -> " .. tostring(score.Value))
+    fruitDebugEvent:FireClient(player, fruitName, score.Value, fruitCount.Value, player.Name)
+    fruitSoundEvent:FireClient(player, "pickup", fruitName)
 
     fruit:Destroy()
 end
@@ -272,6 +388,8 @@ local function spawnFruit()
     fruit.Parent = Workspace
     moveToPosition(fruit, spawnPosition)
     bindTouchEvents(fruit)
+    fruitSoundEvent:FireAllClients("drop", fruit.Name)
+    fruitDebugEvent:FireAllClients("__spawn", fruit.Name, 0, 0, "server")
 
     debugLog(string.format(
         "Spawned %s at %.2f, %.2f, %.2f",
@@ -293,11 +411,14 @@ end
 
 for _, player in ipairs(Players:GetPlayers()) do
     ensureScore(player)
+    ensureFruitCounts(player)
 end
 
 Players.PlayerAdded:Connect(function(player)
     ensureScore(player)
+    ensureFruitCounts(player)
 end)
 
+setupBackgroundMusic()
 cacheWorkspaceFruitTemplates()
 startSpawner()
