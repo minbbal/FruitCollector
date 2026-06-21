@@ -3,6 +3,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
@@ -10,6 +11,7 @@ local Workspace = game:GetService("Workspace")
 local FRUIT_TEMPLATE_FOLDER_NAME = "FruitTemplates"
 local FRUIT_DEBUG_EVENT_NAME = "FruitDebugEvent"
 local FRUIT_SOUND_EVENT_NAME = "FruitSoundEvent"
+local FRUIT_RESPAWN_EFFECT_EVENT_NAME = "FruitRespawnEffectEvent"
 local FRUIT_NAME_TOKEN = "Fruit"
 local FRUIT_SPAWN_AREA_FOLDER_NAME = "FruitSpawnArea"
 local AREAS_FOLDER_NAME = "Areas"
@@ -17,8 +19,13 @@ local GRASS_SPAWN_AREA_NAME = "Grass"
 local TARGET_LONGEST_AXIS = 2.2
 local SPAWN_INTERVAL = 2
 local SPAWN_HEIGHT_ABOVE_GRASS = 80
+local FALL_DETECTION_OFFSET = 30
+local FALL_CHECK_INTERVAL = 0.2
+local FALL_RESPAWN_DELAY = 4.5
 local BGM_SOUND_ID = "rbxassetid://1839825760"
 local BGM_VOLUME = 0.25
+
+Players.CharacterAutoLoads = false
 
 local fruitTemplateFolder = ServerStorage:FindFirstChild(FRUIT_TEMPLATE_FOLDER_NAME)
 if not fruitTemplateFolder then
@@ -41,12 +48,28 @@ if not fruitSoundEvent then
     fruitSoundEvent.Parent = ReplicatedStorage
 end
 
+local fruitRespawnEffectEvent = ReplicatedStorage:FindFirstChild(FRUIT_RESPAWN_EFFECT_EVENT_NAME)
+if not fruitRespawnEffectEvent then
+    fruitRespawnEffectEvent = Instance.new("RemoteEvent")
+    fruitRespawnEffectEvent.Name = FRUIT_RESPAWN_EFFECT_EVENT_NAME
+    fruitRespawnEffectEvent.Parent = ReplicatedStorage
+end
+
 local warnedMissingGrassArea = false
 local warnedMissingGrassParts = false
 local loggedGrassAreaFound = false
+local lastLoggedGrassPartCount = nil
+local processingFall = {}
+local playerHasLoadedCharacter = {}
+local fallCheckAccumulator = 0
 
 local function debugLog(message)
     print("[FruitSpawner] " .. message)
+end
+
+local function debugPlayer(player, message)
+    print("[FallDebug] " .. player.Name .. " " .. message)
+    fruitDebugEvent:FireClient(player, "__log", message, 0, 0, "server")
 end
 
 local function setupBackgroundMusic()
@@ -204,11 +227,26 @@ local function getGrassSpawnParts()
             warnedMissingGrassParts = true
             warn("[FruitSpawner] Grass spawn area has no BasePart. Fruit spawning is paused.")
         end
-    else
+    elseif lastLoggedGrassPartCount ~= #parts then
+        lastLoggedGrassPartCount = #parts
         debugLog("Grass spawn part count: " .. tostring(#parts))
     end
 
     return parts
+end
+
+local function getGrassMinY()
+    local spawnParts = getGrassSpawnParts()
+    if #spawnParts <= 0 then
+        return nil
+    end
+
+    local minY = math.huge
+    for _, part in ipairs(spawnParts) do
+        minY = math.min(minY, part.Position.Y - (part.Size.Y * 0.5))
+    end
+
+    return minY
 end
 
 local function getRandomSpawnPosition()
@@ -307,6 +345,85 @@ local function ensureFruitCountValue(player, fruitName)
     end
 
     return fruitCount
+end
+
+local function applyFallPenalty(player)
+    local score = ensureScore(player)
+    local oldScore = score.Value
+    score.Value = math.floor(score.Value / 2)
+    fruitDebugEvent:FireClient(player, "__score", score.Value, 0, "server")
+    debugPlayer(player, "score penalty: " .. tostring(oldScore) .. " -> " .. tostring(score.Value))
+
+    local fruitCounts = ensureFruitCounts(player)
+    for _, value in ipairs(fruitCounts:GetChildren()) do
+        if value:IsA("IntValue") then
+            local oldCount = value.Value
+            value.Value = math.floor(value.Value / 2)
+            fruitDebugEvent:FireClient(player, "__count", value.Name, value.Value, "server")
+            debugPlayer(player, value.Name .. " penalty: " .. tostring(oldCount) .. " -> " .. tostring(value.Value))
+        end
+    end
+end
+
+local function respawnPlayerAfterDelay(player)
+    debugPlayer(player, "not killing character; waiting " .. tostring(FALL_RESPAWN_DELAY) .. " seconds before respawn")
+    debugPlayer(player, "respawn scheduled in " .. tostring(FALL_RESPAWN_DELAY) .. " seconds")
+    task.delay(FALL_RESPAWN_DELAY, function()
+        if not player.Parent then
+            processingFall[player] = nil
+            return
+        end
+
+        debugPlayer(player, "running SpawnLocation respawn now")
+        player:LoadCharacter()
+        fruitRespawnEffectEvent:FireClient(player)
+    end)
+end
+
+local function handlePlayerFall(player, reason)
+    if processingFall[player] then
+        return
+    end
+
+    processingFall[player] = true
+    debugPlayer(player, "fall detected: " .. reason)
+    applyFallPenalty(player)
+
+    respawnPlayerAfterDelay(player)
+end
+
+local function setupCharacter(player, character)
+    playerHasLoadedCharacter[player] = true
+
+    task.defer(function()
+        if player.Parent and character.Parent then
+            if processingFall[player] then
+                debugPlayer(player, "SpawnLocation respawn complete")
+            end
+            processingFall[player] = nil
+        end
+    end)
+end
+
+local function setupPlayer(player)
+    ensureScore(player)
+    ensureFruitCounts(player)
+
+    player.CharacterAdded:Connect(function(character)
+        setupCharacter(player, character)
+    end)
+
+    player.CharacterRemoving:Connect(function()
+        if playerHasLoadedCharacter[player] and not processingFall[player] then
+            handlePlayerFall(player, "character removed")
+        end
+    end)
+
+    if not player.Character then
+        player:LoadCharacter()
+    else
+        setupCharacter(player, player.Character)
+    end
 end
 
 local function collectFruit(player, fruit)
@@ -409,16 +526,56 @@ local function startSpawner()
     end)
 end
 
-for _, player in ipairs(Players:GetPlayers()) do
-    ensureScore(player)
-    ensureFruitCounts(player)
+local function startFallMonitor()
+    RunService.Heartbeat:Connect(function(deltaTime)
+        fallCheckAccumulator += deltaTime
+        if fallCheckAccumulator < FALL_CHECK_INTERVAL then
+            return
+        end
+        fallCheckAccumulator = 0
+
+        local grassMinY = getGrassMinY()
+        if not grassMinY then
+            return
+        end
+
+        local fallY = grassMinY - FALL_DETECTION_OFFSET
+        for _, player in ipairs(Players:GetPlayers()) do
+            if not processingFall[player] and playerHasLoadedCharacter[player] then
+                local character = player.Character
+                local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+                if not character or not character.Parent then
+                    handlePlayerFall(player, "character missing")
+                elseif not rootPart then
+                    handlePlayerFall(player, "HumanoidRootPart missing")
+                elseif humanoid and humanoid.Health <= 0 then
+                    handlePlayerFall(player, "humanoid dead")
+                elseif rootPart.Position.Y < fallY then
+                    handlePlayerFall(player, string.format(
+                        "HumanoidRootPart Y %.2f below fall Y %.2f",
+                        rootPart.Position.Y,
+                        fallY
+                    ))
+                end
+            end
+        end
+    end)
 end
 
-Players.PlayerAdded:Connect(function(player)
-    ensureScore(player)
-    ensureFruitCounts(player)
+for _, player in ipairs(Players:GetPlayers()) do
+    setupPlayer(player)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+
+Players.PlayerRemoving:Connect(function(player)
+    processingFall[player] = nil
+    playerHasLoadedCharacter[player] = nil
 end)
 
 setupBackgroundMusic()
 cacheWorkspaceFruitTemplates()
 startSpawner()
+startFallMonitor()
