@@ -1,140 +1,168 @@
 -- FruitSpawner.server.lua
--- This script searches Workspace for fruit-like assets, copies them into
--- ServerStorage/FruitTemplates, and spawns collectible fruit clones.
+-- Uses Workspace fruit assets whose names contain "Fruit" as templates.
 
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
 local FRUIT_TEMPLATE_FOLDER_NAME = "FruitTemplates"
-local FRUIT_TEMPLATE_FOLDER = ServerStorage:FindFirstChild(FRUIT_TEMPLATE_FOLDER_NAME)
-if not FRUIT_TEMPLATE_FOLDER then
-    FRUIT_TEMPLATE_FOLDER = Instance.new("Folder")
-    FRUIT_TEMPLATE_FOLDER.Name = FRUIT_TEMPLATE_FOLDER_NAME
-    FRUIT_TEMPLATE_FOLDER.Parent = ServerStorage
+local FRUIT_NAME_TOKEN = "Fruit"
+local TARGET_LONGEST_AXIS = 2.2
+local SPAWN_INTERVAL = 2
+local SPAWN_HEIGHT_ABOVE_SPAWN = 15
+local SPAWN_AREA_SCALE = 1.2
+
+local fruitTemplateFolder = ServerStorage:FindFirstChild(FRUIT_TEMPLATE_FOLDER_NAME)
+if not fruitTemplateFolder then
+    fruitTemplateFolder = Instance.new("Folder")
+    fruitTemplateFolder.Name = FRUIT_TEMPLATE_FOLDER_NAME
+    fruitTemplateFolder.Parent = ServerStorage
 end
 
-local FRUIT_KEYWORDS = {
-    "apple",
-    "banana",
-    "orange",
-    "strawberry",
-    "grape",
-    "watermelon",
-    "fruit",
-}
+local warnedMissingSpawnLocation = false
 
-local TARGET_SCALE = 2.2
-local SPAWN_INTERVAL = 2
-local SPAWN_HEIGHT = 5
-local SPAWN_EDGE_RATIO = 0.2
-local DEFAULT_ARENA_RADIUS = 40
+local function debugLog(message)
+    print("[FruitSpawner] " .. message)
+end
 
 local function isFruitName(name)
-    local lowerName = string.lower(name)
-    for _, keyword in ipairs(FRUIT_KEYWORDS) do
-        if string.find(lowerName, keyword, 1, true) then
+    return string.find(name, FRUIT_NAME_TOKEN, 1, true) ~= nil
+end
+
+local function isFruitAsset(instance)
+    return (instance:IsA("Model") or instance:IsA("BasePart")) and isFruitName(instance.Name)
+end
+
+local function hasFruitAssetAncestor(instance)
+    local ancestor = instance.Parent
+    while ancestor and ancestor ~= Workspace do
+        if isFruitAsset(ancestor) then
             return true
         end
+        ancestor = ancestor.Parent
     end
+
     return false
 end
 
 local function getLargestAxisSize(instance)
     if instance:IsA("Model") then
-        local maxSize = 0
+        local largest = 0
         for _, descendant in ipairs(instance:GetDescendants()) do
             if descendant:IsA("BasePart") then
-                local size = math.max(descendant.Size.X, descendant.Size.Y, descendant.Size.Z)
-                if size > maxSize then
-                    maxSize = size
-                end
+                largest = math.max(largest, descendant.Size.X, descendant.Size.Y, descendant.Size.Z)
             end
         end
-        return maxSize
-    elseif instance:IsA("BasePart") or instance:IsA("MeshPart") then
+        return largest
+    end
+
+    if instance:IsA("BasePart") then
         return math.max(instance.Size.X, instance.Size.Y, instance.Size.Z)
     end
+
     return 0
 end
 
-local function normalizeInstanceSize(instance)
-    local longest = getLargestAxisSize(instance)
-    if longest <= 0 then
+local function normalizeFruitSize(instance)
+    local largest = getLargestAxisSize(instance)
+    if largest <= 0 then
+        warn("[FruitSpawner] Cannot resize fruit template without BasePart: " .. instance.Name)
         return
     end
 
-    local scale = TARGET_SCALE / longest
-
+    local scale = TARGET_LONGEST_AXIS / largest
     if instance:IsA("Model") then
         instance:ScaleTo(scale)
-    elseif instance:IsA("BasePart") or instance:IsA("MeshPart") then
+    elseif instance:IsA("BasePart") then
         instance.Size = instance.Size * scale
     end
 end
 
-local function hideOriginal(instance)
-    if instance:IsA("Model") then
-        for _, descendant in ipairs(instance:GetDescendants()) do
-            if descendant:IsA("BasePart") then
-                descendant.Transparency = 1
-                descendant.CanCollide = false
-                descendant.CanTouch = false
-                descendant.CanQuery = false
-            end
-        end
-        instance.Parent = nil
-    elseif instance:IsA("BasePart") or instance:IsA("MeshPart") then
-        instance.Transparency = 1
-        instance.CanCollide = false
-        instance.CanTouch = false
-        instance.CanQuery = false
-        instance.Parent = nil
-    end
-end
-
-local function prepareTemplate(instance)
-    if instance:IsA("Model") then
-        if not instance.PrimaryPart then
-            local part = instance:FindFirstChildWhichIsA("BasePart")
-            if part then
-                instance.PrimaryPart = part
-            end
-        end
-
-        for _, descendant in ipairs(instance:GetDescendants()) do
-            if descendant:IsA("BasePart") then
-                descendant.Transparency = 0
-                descendant.Anchored = true
-                descendant.CanCollide = false
-                descendant.CanTouch = false
-                descendant.CanQuery = false
-            end
-        end
-
-        if instance.PrimaryPart then
-            instance.PrimaryPart.Anchored = true
-        end
-
-        instance.Parent = FRUIT_TEMPLATE_FOLDER
-    elseif instance:IsA("BasePart") or instance:IsA("MeshPart") then
-        instance.Transparency = 0
+local function setTemplatePhysics(instance)
+    if instance:IsA("BasePart") then
         instance.Anchored = true
         instance.CanCollide = false
         instance.CanTouch = false
         instance.CanQuery = false
-        instance.Parent = FRUIT_TEMPLATE_FOLDER
+        instance.Transparency = 0
+    end
+
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            descendant.Anchored = true
+            descendant.CanCollide = false
+            descendant.CanTouch = false
+            descendant.CanQuery = false
+            descendant.Transparency = 0
+        end
     end
 end
 
-local function findFruitAssets()
+local function setSpawnedFruitPhysics(instance)
+    if instance:IsA("BasePart") then
+        instance.Anchored = false
+        instance.CanCollide = true
+        instance.CanTouch = true
+        instance.CanQuery = true
+        instance.Transparency = 0
+        instance.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+    end
+
+    for _, descendant in ipairs(instance:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            descendant.Anchored = false
+            descendant.CanCollide = true
+            descendant.CanTouch = true
+            descendant.CanQuery = true
+            descendant.Transparency = 0
+            descendant.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+        end
+    end
+end
+
+local function findSpawnLocation()
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant:IsA("SpawnLocation") then
+            return descendant
+        end
+    end
+
+    if not warnedMissingSpawnLocation then
+        warnedMissingSpawnLocation = true
+        warn("[FruitSpawner] SpawnLocation not found. Fruit spawning is paused.")
+    end
+
+    return nil
+end
+
+local function getRandomSpawnPosition()
+    local spawnLocation = findSpawnLocation()
+    if not spawnLocation then
+        return nil
+    end
+
+    local halfX = spawnLocation.Size.X * 0.5 * SPAWN_AREA_SCALE
+    local halfZ = spawnLocation.Size.Z * 0.5 * SPAWN_AREA_SCALE
+    local x = spawnLocation.Position.X + ((math.random() * 2 - 1) * halfX)
+    local z = spawnLocation.Position.Z + ((math.random() * 2 - 1) * halfZ)
+    local y = spawnLocation.Position.Y + (spawnLocation.Size.Y * 0.5) + SPAWN_HEIGHT_ABOVE_SPAWN
+
+    return Vector3.new(x, y, z)
+end
+
+local function moveToPosition(instance, position)
+    if instance:IsA("Model") then
+        instance:PivotTo(CFrame.new(position))
+    elseif instance:IsA("BasePart") then
+        instance.CFrame = CFrame.new(position)
+    end
+end
+
+local function findWorkspaceFruitAssets()
     local fruitAssets = {}
 
     for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if (descendant:IsA("Model") or descendant:IsA("BasePart") or descendant:IsA("MeshPart"))
-            and isFruitName(descendant.Name)
-            and not descendant:IsDescendantOf(FRUIT_TEMPLATE_FOLDER)
-        then
+        if isFruitAsset(descendant) and not hasFruitAssetAncestor(descendant) then
             table.insert(fruitAssets, descendant)
         end
     end
@@ -142,103 +170,40 @@ local function findFruitAssets()
     return fruitAssets
 end
 
-local function getSpawnCenter()
-    local spawnLocation = Workspace:FindFirstChild("SpawnLocation")
-    if spawnLocation and spawnLocation:IsA("SpawnLocation") then
-        return spawnLocation.Position
+local function cacheWorkspaceFruitTemplates()
+    local fruitAssets = findWorkspaceFruitAssets()
+
+    for _, asset in ipairs(fruitAssets) do
+        local template = asset:Clone()
+        template.Name = asset.Name
+        normalizeFruitSize(template)
+        setTemplatePhysics(template)
+        template.Parent = fruitTemplateFolder
+
+        debugLog("Fruit template found: " .. template.Name)
+        asset:Destroy()
     end
 
-    return Vector3.new(0, SPAWN_HEIGHT, 0)
+    debugLog("Fruit template count: " .. tostring(#fruitTemplateFolder:GetChildren()))
 end
 
-local function getSpawnRadius()
-    local spawnLocation = Workspace:FindFirstChild("SpawnLocation")
-    if spawnLocation and spawnLocation:IsA("SpawnLocation") then
-        local size = spawnLocation.Size
-        local radiusFromSize = math.max(size.X, size.Z) * 0.5
-        return math.max(radiusFromSize * 6, DEFAULT_ARENA_RADIUS)
+local function ensureScore(player)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if not leaderstats then
+        leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
     end
 
-    return DEFAULT_ARENA_RADIUS
-end
-
-local function randomSpawnPosition()
-    local center = getSpawnCenter()
-    local radius = getSpawnRadius()
-    local innerRadius = radius * (1 - SPAWN_EDGE_RATIO)
-
-    local angle = math.random() * math.pi * 2
-    local distance = innerRadius + (math.random() * (radius - innerRadius))
-
-    return Vector3.new(
-        center.X + math.cos(angle) * distance,
-        SPAWN_HEIGHT,
-        center.Z + math.sin(angle) * distance
-    )
-end
-
-local function setupFruitInstance(fruit)
-    if fruit:IsA("Model") then
-        if not fruit.PrimaryPart then
-            local part = fruit:FindFirstChildWhichIsA("BasePart")
-            if part then
-                fruit.PrimaryPart = part
-            end
-        end
-
-        fruit:SetAttribute("FruitTag", true)
-        for _, descendant in ipairs(fruit:GetDescendants()) do
-            if descendant:IsA("BasePart") then
-                descendant.Transparency = 0
-                descendant.Anchored = false
-                descendant.CanCollide = true
-                descendant.CanTouch = true
-                descendant.CanQuery = true
-                descendant.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
-            end
-        end
-    elseif fruit:IsA("BasePart") or fruit:IsA("MeshPart") then
-        fruit.Transparency = 0
-        fruit.Anchored = false
-        fruit.CanCollide = true
-        fruit.CanTouch = true
-        fruit.CanQuery = true
-        fruit.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+    local score = leaderstats:FindFirstChild("Score")
+    if not score then
+        score = Instance.new("IntValue")
+        score.Name = "Score"
+        score.Value = 0
+        score.Parent = leaderstats
     end
 
-    fruit.Parent = Workspace
-
-    local spawnPosition = randomSpawnPosition()
-
-    if fruit:IsA("Model") and fruit.PrimaryPart then
-        fruit:PivotTo(CFrame.new(spawnPosition))
-    elseif fruit:IsA("Model") then
-        local firstPart = fruit:FindFirstChildWhichIsA("BasePart")
-        if firstPart then
-            firstPart.CFrame = CFrame.new(spawnPosition)
-        end
-    else
-        fruit.Position = spawnPosition
-    end
-end
-
-local function createLeaderboard(player)
-    local leaderstats = Instance.new("Folder")
-    leaderstats.Name = "leaderstats"
-    leaderstats.Parent = player
-
-    local score = Instance.new("IntValue")
-    score.Name = "Score"
-    score.Value = 0
-    score.Parent = leaderstats
-end
-
-Players.PlayerAdded:Connect(function(player)
-    createLeaderboard(player)
-end)
-
-for _, player in ipairs(Players:GetPlayers()) do
-    createLeaderboard(player)
+    return score
 end
 
 local function collectFruit(player, fruit)
@@ -247,79 +212,92 @@ local function collectFruit(player, fruit)
     end
 
     fruit:SetAttribute("Collected", true)
-    fruit:Destroy()
 
-    local leaderstats = player:FindFirstChild("leaderstats")
-    if leaderstats then
-        local scoreValue = leaderstats:FindFirstChild("Score")
-        if scoreValue and scoreValue:IsA("IntValue") then
-            scoreValue.Value += 1
+    local score = ensureScore(player)
+    local oldScore = score.Value
+    score.Value += 1
+
+    debugLog(player.Name .. " collected " .. fruit.Name)
+    debugLog(player.Name .. " score changed: " .. tostring(oldScore) .. " -> " .. tostring(score.Value))
+
+    fruit:Destroy()
+end
+
+local function bindTouchEvents(fruit)
+    local function onTouched(hit)
+        local character = hit.Parent
+        if not character then
+            return
+        end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then
+            return
+        end
+
+        local player = Players:GetPlayerFromCharacter(character)
+        if player then
+            collectFruit(player, fruit)
+        end
+    end
+
+    if fruit:IsA("BasePart") then
+        fruit.Touched:Connect(onTouched)
+    end
+
+    for _, descendant in ipairs(fruit:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            descendant.Touched:Connect(onTouched)
         end
     end
 end
 
-local function bindTouchEvents(fruit)
-    if fruit:IsA("Model") then
-        for _, descendant in ipairs(fruit:GetDescendants()) do
-            if descendant:IsA("BasePart") then
-                descendant.Touched:Connect(function(hit)
-                    local character = hit.Parent
-                    if not character then
-                        return
-                    end
-
-                    local humanoid = character:FindFirstChildOfClass("Humanoid")
-                    if not humanoid then
-                        return
-                    end
-
-                    local player = Players:GetPlayerFromCharacter(character)
-                    if player then
-                        collectFruit(player, fruit)
-                    end
-                end)
-            end
-        end
-    elseif fruit:IsA("BasePart") or fruit:IsA("MeshPart") then
-        fruit.Touched:Connect(function(hit)
-            local character = hit.Parent
-            if not character then
-                return
-            end
-
-            local humanoid = character:FindFirstChildOfClass("Humanoid")
-            if not humanoid then
-                return
-            end
-
-            local player = Players:GetPlayerFromCharacter(character)
-            if player then
-                collectFruit(player, fruit)
-            end
-        end)
+local function spawnFruit()
+    local templates = fruitTemplateFolder:GetChildren()
+    if #templates <= 0 then
+        warn("[FruitSpawner] No fruit templates found in ServerStorage/FruitTemplates.")
+        return
     end
+
+    local spawnPosition = getRandomSpawnPosition()
+    if not spawnPosition then
+        return
+    end
+
+    local template = templates[math.random(1, #templates)]
+    local fruit = template:Clone()
+    fruit.Name = template.Name
+    fruit:SetAttribute("Collected", false)
+    setSpawnedFruitPhysics(fruit)
+    fruit.Parent = Workspace
+    moveToPosition(fruit, spawnPosition)
+    bindTouchEvents(fruit)
+
+    debugLog(string.format(
+        "Spawned %s at %.2f, %.2f, %.2f",
+        fruit.Name,
+        spawnPosition.X,
+        spawnPosition.Y,
+        spawnPosition.Z
+    ))
 end
 
 local function startSpawner()
     task.spawn(function()
         while true do
-            local templates = FRUIT_TEMPLATE_FOLDER:GetChildren()
-            if #templates > 0 then
-                local template = templates[math.random(1, #templates)]
-                local fruit = template:Clone()
-                setupFruitInstance(fruit)
-                bindTouchEvents(fruit)
-            end
+            spawnFruit()
             task.wait(SPAWN_INTERVAL)
         end
     end)
 end
 
-local fruitAssets = findFruitAssets()
-for _, asset in ipairs(fruitAssets) do
-    normalizeInstanceSize(asset)
-    hideOriginal(asset)
-    prepareTemplate(asset)
+for _, player in ipairs(Players:GetPlayers()) do
+    ensureScore(player)
 end
 
+Players.PlayerAdded:Connect(function(player)
+    ensureScore(player)
+end)
+
+cacheWorkspaceFruitTemplates()
 startSpawner()
