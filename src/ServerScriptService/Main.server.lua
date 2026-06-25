@@ -2,13 +2,9 @@
 -- This file creates services and starts the game.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local PlayerDataService = require(script.Parent.Services.PlayerDataService)
-local FruitSpawnerService = require(script.Parent.Services.FruitSpawnerService)
 local SellService = require(script.Parent.Services.SellService)
-
-local FruitMessage = ReplicatedStorage.Remotes:WaitForChild("FruitMessage")
 
 local function initializePlayer(player)
     -- Create leaderstats and setup player data.
@@ -36,7 +32,6 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 -- Start services.
-FruitSpawnerService.start()
 SellService.start()
 
 print("FruitCollector server started.")

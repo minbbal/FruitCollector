@@ -6,11 +6,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local FruitMessage = ReplicatedStorage.Remotes:WaitForChild("FruitMessage")
+local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+local FruitDebugEvent = remotesFolder:WaitForChild("FruitDebugEvent")
 
 local function createMessageLabel()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "FruitMessageGui"
+    screenGui.Name = "FruitDebugMessageGui"
     screenGui.Parent = playerGui
 
     local label = Instance.new("TextLabel")
@@ -39,6 +40,10 @@ local function showMessage(text)
     end)
 end
 
-FruitMessage.OnClientEvent:Connect(function(message)
-    showMessage(message)
+FruitDebugEvent.OnClientEvent:Connect(function(fruitName, newTotalScore)
+    if fruitName == "__log" then
+        showMessage(tostring(newTotalScore))
+    elseif fruitName ~= "__spawn" and fruitName ~= "__score" and fruitName ~= "__count" then
+        showMessage("+1 " .. tostring(fruitName))
+    end
 end)

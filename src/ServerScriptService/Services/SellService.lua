@@ -8,7 +8,22 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local PlayerDataService = require(script.Parent.PlayerDataService)
 
 local SellService = {}
-local FruitMessage = ReplicatedStorage.Remotes:WaitForChild("FruitMessage")
+local REMOTES_FOLDER_NAME = "Remotes"
+local FRUIT_DEBUG_EVENT_NAME = "FruitDebugEvent"
+
+local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+if not remotesFolder then
+    remotesFolder = Instance.new("Folder")
+    remotesFolder.Name = REMOTES_FOLDER_NAME
+    remotesFolder.Parent = ReplicatedStorage
+end
+
+local fruitDebugEvent = remotesFolder:FindFirstChild(FRUIT_DEBUG_EVENT_NAME)
+if not fruitDebugEvent then
+    fruitDebugEvent = Instance.new("RemoteEvent")
+    fruitDebugEvent.Name = FRUIT_DEBUG_EVENT_NAME
+    fruitDebugEvent.Parent = remotesFolder
+end
 
 local function createSellZone()
     local sellZone = Workspace:FindFirstChild("SellZone")
@@ -53,11 +68,11 @@ function SellService.start()
         PlayerDataService.setFruits(player, 0)
 
         -- Tell the player the result.
-        FruitMessage:FireClient(player, string.format(
+        fruitDebugEvent:FireClient(player, "__log", string.format(
             "Sold %d fruits for %d coins!",
             fruitsCount,
             earnedCoins
-        ))
+        ), 0, "server")
     end)
 end
 

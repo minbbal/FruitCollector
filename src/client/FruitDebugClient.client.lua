@@ -9,9 +9,12 @@ local SoundService = game:GetService("SoundService")
 local MAX_RECENT_LOGS = 8
 local FRUIT_DEBUG_EVENT_NAME = "FruitDebugEvent"
 local FRUIT_SOUND_EVENT_NAME = "FruitSoundEvent"
+local FRUIT_RESPAWN_EFFECT_EVENT_NAME = "FruitRespawnEffectEvent"
 local PICKUP_SOUND_ID = "rbxassetid://135483737426662"
 local DROP_SOUND_ID = "rbxassetid://9120066881"
 local JUMP_SOUND_ID = "rbxassetid://135162567109750"
+local RESPAWN_SOUND_ID = "rbxassetid://80995537118101"
+local RESPAWN_JINGLE_SOUND_ID = "rbxassetid://1841983099"
 local PLACEHOLDER_SOUND_ID = "rbxassetid://" .. utf8.char(
     0xC5EC,
     0xAE30,
@@ -30,12 +33,17 @@ local PLACEHOLDER_SOUND_ID = "rbxassetid://" .. utf8.char(
 local PICKUP_VOLUME = 1
 local DROP_VOLUME = 0.6
 local JUMP_VOLUME = 0.7
+local RESPAWN_VOLUME = 0.8
+local RESPAWN_JINGLE_VOLUME = 0.5
 local JUMP_SOUND_COOLDOWN = 0.2
+local RESPAWN_EFFECT_LIFETIME = 2
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local fruitDebugEvent = ReplicatedStorage:WaitForChild(FRUIT_DEBUG_EVENT_NAME)
-local fruitSoundEvent = ReplicatedStorage:WaitForChild(FRUIT_SOUND_EVENT_NAME)
+local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+local fruitDebugEvent = remotesFolder:WaitForChild(FRUIT_DEBUG_EVENT_NAME)
+local fruitSoundEvent = remotesFolder:WaitForChild(FRUIT_SOUND_EVENT_NAME)
+local fruitRespawnEffectEvent = remotesFolder:WaitForChild(FRUIT_RESPAWN_EFFECT_EVENT_NAME)
 
 local fruitCounts = {}
 local recentLogs = {}
@@ -146,6 +154,77 @@ local function playSound(soundId, volume, labelText)
     return true
 end
 
+local function findSpawnLocation()
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        if descendant:IsA("SpawnLocation") then
+            return descendant
+        end
+    end
+
+    return nil
+end
+
+local function playRespawnEffect()
+    local spawnLocation = findSpawnLocation()
+    if not spawnLocation then
+        local message = "[RespawnEffect] SpawnLocation missing"
+        warn(message)
+        addRecentLog(message)
+        return
+    end
+
+    addRecentLog("[RespawnEffect] start")
+
+    local effectPart = Instance.new("Part")
+    effectPart.Name = "FruitRespawnEffect"
+    effectPart.Anchored = true
+    effectPart.CanCollide = false
+    effectPart.CanTouch = false
+    effectPart.CanQuery = false
+    effectPart.Transparency = 1
+    effectPart.Size = Vector3.new(1, 1, 1)
+    effectPart.CFrame = CFrame.new(spawnLocation.Position + Vector3.new(0, spawnLocation.Size.Y * 0.5 + 3, 0))
+    effectPart.Parent = workspace
+
+    local attachment = Instance.new("Attachment")
+    attachment.Parent = effectPart
+
+    local light = Instance.new("PointLight")
+    light.Brightness = 5
+    light.Range = 18
+    light.Color = Color3.fromRGB(255, 244, 180)
+    light.Parent = attachment
+
+    local particles = Instance.new("ParticleEmitter")
+    particles.Rate = 90
+    particles.Lifetime = NumberRange.new(0.7, 1.3)
+    particles.Speed = NumberRange.new(5, 10)
+    particles.SpreadAngle = Vector2.new(180, 180)
+    particles.Color = ColorSequence.new(Color3.fromRGB(255, 245, 170), Color3.fromRGB(120, 220, 255))
+    particles.LightEmission = 0.75
+    particles.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.2),
+        NumberSequenceKeypoint.new(0.45, 0.55),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    particles.Parent = attachment
+    particles:Emit(80)
+
+    playSound(RESPAWN_SOUND_ID, RESPAWN_VOLUME, "respawn")
+    playSound(RESPAWN_JINGLE_SOUND_ID, RESPAWN_JINGLE_VOLUME, "respawn_jingle")
+
+    task.delay(1.2, function()
+        if particles.Parent then
+            particles.Enabled = false
+        end
+        if light.Parent then
+            light.Enabled = false
+        end
+    end)
+
+    Debris:AddItem(effectPart, RESPAWN_EFFECT_LIFETIME)
+end
+
 local function connectJumpSound(character)
     local humanoid = character:WaitForChild("Humanoid", 5)
     if not humanoid then
@@ -172,6 +251,23 @@ end
 fruitDebugEvent.OnClientEvent:Connect(function(fruitName, newTotalScore, fruitCount, playerName)
     if fruitName == "__spawn" then
         addRecentLog("Spawned " .. tostring(newTotalScore))
+        return
+    end
+
+    if fruitName == "__log" then
+        addRecentLog(tostring(newTotalScore))
+        return
+    end
+
+    if fruitName == "__score" then
+        totalScore = newTotalScore
+        renderDebugText()
+        return
+    end
+
+    if fruitName == "__count" then
+        fruitCounts[tostring(newTotalScore)] = fruitCount
+        renderDebugText()
         return
     end
 
@@ -202,6 +298,11 @@ fruitSoundEvent.OnClientEvent:Connect(function(action, fruitName)
         warn(message)
         addRecentLog(message)
     end
+end)
+
+fruitRespawnEffectEvent.OnClientEvent:Connect(function()
+    print("[RespawnEffect] Request received")
+    playRespawnEffect()
 end)
 
 if player.Character then
